@@ -1018,17 +1018,13 @@ static bool shouldResolveMandatoryPrefixConflict(struct InternalInstruction *ins
 			}
 			break;
 		case THREEBYTE_38:
-			return true; // TODO
 		case THREEBYTE_3A:
-			return true; // TODO
+			return false; // do not need to be resolved, REP+DATA16 combinations are UD or separately specified
 		case XOP8_MAP:
-			return true; // TODO
 		case XOP9_MAP:
-			return true; // TODO
 		case XOPA_MAP:
-			return true; // TODO
 		case THREEDNOW_MAP:
-			return true; // TODO
+			return true; // TODO: Need to be resolved by preferring DATA16
 	}
 
 	return false;
