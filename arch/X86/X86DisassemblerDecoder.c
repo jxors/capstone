@@ -353,15 +353,13 @@ static bool isREX(struct InternalInstruction *insn, uint8_t prefix)
 }
 
 /*
- * setPrefixPresent - Marks that a particular prefix is present as mandatory
+ * setGroup0Prefix - Updates the decoded instruction according to the group 0-prefix.
  *
- * @param insn      - The instruction to be marked as having the prefix.
- * @param prefix    - The prefix that is present.
+ * @param insn      - The instruction to be updated.
+ * @param prefix    - The group 0 prefix that is present.
  */
-static void setPrefixPresent(struct InternalInstruction *insn, uint8_t prefix)
+static void setGroup0Prefix(struct InternalInstruction *insn, uint8_t prefix)
 {
-	uint8_t nextByte;
-
 	switch (prefix) {
 	case 0xf0: // LOCK
 		insn->hasLockPrefix = true;
@@ -370,30 +368,8 @@ static void setPrefixPresent(struct InternalInstruction *insn, uint8_t prefix)
 
 	case 0xf2: // REPNE/REPNZ
 	case 0xf3: // REP or REPE/REPZ
-		if (lookAtByte(insn, &nextByte))
-			break;
-		// TODO:
-		//  1. There could be several 0x66
-		//  2. if (nextByte == 0x66) and nextNextByte != 0x0f then
-		//      it's not mandatory prefix
-		//  3. if (nextByte >= 0x40 && nextByte <= 0x4f) it's REX and we need
-		//     0x0f exactly after it to be mandatory prefix
-		if (isREX(insn, nextByte) || nextByte == 0x0f ||
-		    nextByte == 0x66)
-			// The last of 0xf2 /0xf3 is mandatory prefix
-			insn->mandatoryPrefix = prefix;
-
 		insn->repeatPrefix = prefix;
 		insn->hasLockPrefix = false;
-		break;
-
-	case 0x66:
-		if (lookAtByte(insn, &nextByte))
-			break;
-		// 0x66 can't overwrite existing mandatory prefix and should be ignored
-		if (!insn->mandatoryPrefix &&
-		    (nextByte == 0x0f || isREX(insn, nextByte)))
-			insn->mandatoryPrefix = prefix;
 		break;
 	}
 }
@@ -511,7 +487,7 @@ static int readPrefixes(struct InternalInstruction *insn)
 		case 0xf2: /* REPNE/REPNZ */
 		case 0xf3: /* REP or REPE/REPZ */
 			// only accept the last prefix
-			setPrefixPresent(insn, byte);
+			setGroup0Prefix(insn, byte);
 			insn->prefix0 = byte;
 			break;
 
@@ -550,18 +526,15 @@ static int readPrefixes(struct InternalInstruction *insn)
 				// debug("Unhandled override");
 				return -1;
 			}
-			setPrefixPresent(insn, byte);
 			break;
 
 		case 0x66: /* Operand-size override */
 			insn->hasOpSize = true;
-			setPrefixPresent(insn, byte);
 			insn->prefix2 = byte;
 			break;
 
 		case 0x67: /* Address-size override */
 			insn->hasAdSize = true;
-			setPrefixPresent(insn, byte);
 			insn->prefix3 = byte;
 			break;
 		default: /* Not a prefix byte */
@@ -908,10 +881,7 @@ static int readOpcode(struct InternalInstruction *insn)
 			// dbgprintf(insn, "Didn't find a three-byte escape prefix");
 			insn->opcodeType = TWOBYTE;
 		}
-	} else if (insn->mandatoryPrefix)
-		// The opcode with mandatory prefix must start with opcode escape.
-		// If not it's legacy repeat prefix
-		insn->mandatoryPrefix = 0;
+	}
 
 	/*
 	 * At this point we have consumed the full opcode.
@@ -1104,7 +1074,7 @@ static int getID(struct InternalInstruction *insn)
 		} else {
 			return -1;
 		}
-	} else if (!insn->mandatoryPrefix) {
+	} else {
 		// If we don't have mandatory prefix we should use legacy prefixes here
 		if (insn->hasOpSize && (insn->mode != MODE_16BIT))
 			attrMask |= ATTR_OPSIZE;
@@ -1120,22 +1090,6 @@ static int getID(struct InternalInstruction *insn)
 				attrMask |= ATTR_XD;
 			else if (insn->repeatPrefix == 0xf3)
 				attrMask |= ATTR_XS;
-		}
-	} else {
-		switch (insn->mandatoryPrefix) {
-		case 0xf2:
-			attrMask |= ATTR_XD;
-			break;
-		case 0xf3:
-			attrMask |= ATTR_XS;
-			break;
-		case 0x66:
-			if (insn->mode != MODE_16BIT)
-				attrMask |= ATTR_OPSIZE;
-			break;
-		case 0x67:
-			attrMask |= ATTR_ADSIZE;
-			break;
 		}
 	}
 
