@@ -161,6 +161,8 @@ static InstrUID decode(OpcodeType type, InstructionContext insnContext,
 	unsigned int index;
 	static const struct OpcodeDecision emptyDecision = { 0 };
 
+	printf("decode(type=%d, insnContext=%d, opcode=0x%02x, modRM=0x%02x)\n", type, insnContext, opcode, modRM);
+
 	switch (type) {
 	default:
 		break; // never reach
@@ -175,6 +177,7 @@ static InstrUID decode(OpcodeType type, InstructionContext insnContext,
 	case TWOBYTE:
 		//dec = &TWOBYTE_SYM.opcodeDecisions[insnContext].modRMDecisions[opcode];
 		index = index_x86DisassemblerTwoByteOpcodes[insnContext];
+		printf("index=%d\n", index);
 		if (index)
 			dec = &TWOBYTE_SYM[index - 1].modRMDecisions[opcode];
 		else
@@ -919,6 +922,8 @@ static int getIDWithAttrMask(uint16_t *instructionID,
 {
 	bool hasModRMExtension;
 
+	printf("getIDWithAttrMask(%04x)\n", attrMask);
+
 	InstructionContext instructionClass = contextForAttrs(attrMask);
 
 	hasModRMExtension =
@@ -975,6 +980,57 @@ static bool is64Bit(uint16_t id)
 	}
 
 	// not found??
+	return false;
+}
+
+/*
+ * TODO: Refactor this into resolveMandatoryPrefixConflict. It should do one of three things: if conflicts should not be resolved, take no action. If conflicts should be resolved and the instruction has no mandatory prefixes, resolve in favor of data size override. If conflicts should be resolved and the instruction has mandatory prefixes, resolve in favor of REP/REPNZ.
+ *
+ * shouldResolveMandatoryPrefixConflict - Returns true when we should resolve a conflict between the data size override prefix and the REP/REPNZ prefixes.
+ * If true, ATTR_OPSIZE should *not* be set when ATTR_XS/ATTR_XD is also set.
+ * If false, both ATTR_OPSIZE and ATTR_XS/ATTR_XD may be set.
+ *
+ * @param insn - The instruction
+ */
+static bool shouldResolveMandatoryPrefixConflict(struct InternalInstruction *insn) {
+	switch (insn->opcodeType) {
+		// No one-byte opcodes have mandatory prefixes.
+		case ONEBYTE: return false;
+		case TWOBYTE:
+			printf("insn->opcode = %02x\n", insn->opcode);
+			switch (insn->opcode & 0xf0) {
+				case 0x10:
+				case 0x20:
+					// TODO: Group 16 does not need resolving
+				case 0x50:
+				case 0x60:
+				case 0x70:
+				case 0xC0:
+					// TODO: C0 / C1 is XADD, which does need the data size override to be set.
+					// TODO: C8..=CF shouldn't be resolved.
+				case 0xD0:
+				case 0xE0:
+				case 0xF0:
+					// TODO: FF shouldn't be resolved
+					return true;
+				default:
+					return false;
+			}
+			break;
+		case THREEBYTE_38:
+			return true; // TODO
+		case THREEBYTE_3A:
+			return true; // TODO
+		case XOP8_MAP:
+			return true; // TODO
+		case XOP9_MAP:
+			return true; // TODO
+		case XOPA_MAP:
+			return true; // TODO
+		case THREEDNOW_MAP:
+			return true; // TODO
+	}
+
 	return false;
 }
 
@@ -1075,9 +1131,9 @@ static int getID(struct InternalInstruction *insn)
 			return -1;
 		}
 	} else {
-		// If we don't have mandatory prefix we should use legacy prefixes here
-		if (insn->hasOpSize && (insn->mode != MODE_16BIT))
+		if (insn->hasOpSize && (insn->mode != MODE_16BIT) && (!insn->repeatPrefix || !shouldResolveMandatoryPrefixConflict(insn))) {
 			attrMask |= ATTR_OPSIZE;
+		}
 		if (insn->hasAdSize)
 			attrMask |= ATTR_ADSIZE;
 		if (insn->opcodeType == ONEBYTE) {
@@ -1090,6 +1146,8 @@ static int getID(struct InternalInstruction *insn)
 				attrMask |= ATTR_XD;
 			else if (insn->repeatPrefix == 0xf3)
 				attrMask |= ATTR_XS;
+
+			// TODO: TableGen doesn't contain entries for instructions with both REP and DATA16 overrides. REP should take priority, but how do we know if DATA16 is relevant?
 		}
 	}
 
