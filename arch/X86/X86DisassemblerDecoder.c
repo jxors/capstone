@@ -161,7 +161,8 @@ static InstrUID decode(OpcodeType type, InstructionContext insnContext,
 	unsigned int index;
 	static const struct OpcodeDecision emptyDecision = { 0 };
 
-	printf("decode(type=%d, insnContext=%d, opcode=0x%02x, modRM=0x%02x)\n", type, insnContext, opcode, modRM);
+	printf("decode(type=%d, insnContext=%d, opcode=0x%02x, modRM=0x%02x)\n",
+	       type, insnContext, opcode, modRM);
 
 	switch (type) {
 	default:
@@ -983,51 +984,143 @@ static bool is64Bit(uint16_t id)
 	return false;
 }
 
+typedef enum {
+	DO_NOT_RESOLVE = 0,
+	IGNORE_REP = 1,
+	IGNORE_DATA_SIZE = 2,
+} MandatoryPrefixResolution;
+
 /*
- * TODO: Refactor this into resolveMandatoryPrefixConflict. It should do one of three things: if conflicts should not be resolved, take no action. If conflicts should be resolved and the instruction has no mandatory prefixes, resolve in favor of data size override. If conflicts should be resolved and the instruction has mandatory prefixes, resolve in favor of REP/REPNZ.
+ * shouldResolveMandatoryPrefixConflict - Resolves conflicts between the 
+ * data size override prefix and the REP/REPNZ prefixes in the attribute 
+ * mask when needed.
  *
- * shouldResolveMandatoryPrefixConflict - Returns true when we should resolve a conflict between the data size override prefix and the REP/REPNZ prefixes.
- * If true, ATTR_OPSIZE should *not* be set when ATTR_XS/ATTR_XD is also set.
- * If false, both ATTR_OPSIZE and ATTR_XS/ATTR_XD may be set.
+ * We need to resolve these conflicts, because the TableGen lookups we 
+ * perform distinguish between instructions with and without REP.
+ * For example, there may be an entry for SHLD with a DATA16 data size 
+ * override prefix, but no entry for REP + DATA16.
+ * These entries are split, because in some cases the REP and DATA16
+ * prefixes are used as mandatory prefixes.
+ * When both are mandatory prefixes, the effect of prefixing both 
+ * to an instruction at the same time is not specified by
+ * reference manuals.
  *
+ * Conflicts are resolved by one of these three resolutions:
+ * 	 - If conflicts should not be resolved, take no action.
+ *   - If conflicts should be resolved and the instruction has no 
+ *     mandatory prefixes, resolves in favor of data size override.
+ *   - If conflicts should be resolved and the instruction has mandatory 
+ *     prefixes, resolves in favor of REP/REPNZ.
+ * 
  * @param insn - The instruction
+ * @param attrMask - The current attribute mask.
  */
-static bool shouldResolveMandatoryPrefixConflict(struct InternalInstruction *insn) {
+static uint16_t resolveMandatoryPrefixConflict(struct InternalInstruction *insn,
+					       uint16_t attrMask)
+{
+	MandatoryPrefixResolution resolution = DO_NOT_RESOLVE;
+
+	// We inspect the opcode map and opcode to determine how we need to resolve 
+	// a mandatory prefix conflict.
 	switch (insn->opcodeType) {
-		// No one-byte opcodes have mandatory prefixes.
-		case ONEBYTE: return false;
-		case TWOBYTE:
-			printf("insn->opcode = %02x\n", insn->opcode);
-			switch (insn->opcode & 0xf0) {
-				case 0x10:
-				case 0x20:
-					// TODO: Group 16 does not need resolving
-				case 0x50:
-				case 0x60:
-				case 0x70:
-				case 0xC0:
-					// TODO: C0 / C1 is XADD, which does need the data size override to be set.
-					// TODO: C8..=CF shouldn't be resolved.
-				case 0xD0:
-				case 0xE0:
-				case 0xF0:
-					// TODO: FF shouldn't be resolved
-					return true;
-				default:
-					return false;
-			}
+	// No one-byte opcodes have mandatory prefixes.
+	case ONEBYTE:
+		resolution = DO_NOT_RESOLVE;
+		break;
+	case TWOBYTE:
+		// Exceptions for instructions that operate on data size-overridable 
+		// operands.
+		if (
+			// XADD
+			(insn->opcode & 0xFE) == 0xC0
+
+			// BSWAP
+			|| (insn->opcode & 0xF8) == 0xC8
+
+			// CMPXCHG, LSS, BTR, LFS, LGS, MOVZX
+			|| (insn->opcode & 0xB8) == 0xB0
+
+			// UD0
+			|| insn->opcode == 0xFF) {
+			resolution = IGNORE_REP;
 			break;
-		case THREEBYTE_38:
-		case THREEBYTE_3A:
-			return false; // do not need to be resolved, REP+DATA16 combinations are UD or separately specified
-		case XOP8_MAP:
-		case XOP9_MAP:
-		case XOPA_MAP:
-		case THREEDNOW_MAP:
-			return true; // TODO: Need to be resolved by preferring DATA16
+		}
+
+		// We inspect the instruction to determine if it operates on xmm 
+		// registers or general-purpose registers.
+		//
+		// If it operates on general purpose registers, the data size override 
+		// prefix is not a mandatory prefix and should not be ignored.
+		// In most cases, this also means that the REP prefix is not a mandatory 
+		// prefix and should be ignored.
+		//
+		// If the instruction operates on xmm registers, the data size override 
+		// is used to select the operation type (SS, SD, PS, or PD).
+		// In this case, the REP prefixes take priority over the data size [1]
+		// override prefixes, and when both are present the data size override 
+		// prefix should be ignored.
+		//
+		// The exception is 0xB0, where the REP prefixes are mandatory prefixes
+		// but the data size override prefix should still be respected.
+		// For this case we return DO_NOT_RESOLVE, which returns attrMask as-is.
+		//
+		// [1]: https://stackoverflow.com/a/7197365
+		switch (insn->opcode & 0xf0) {
+		case 0x10:
+		case 0x50:
+		case 0x60:
+		case 0x70:
+		case 0xC0:
+		case 0xD0:
+		case 0xE0:
+		case 0xF0:
+			resolution = IGNORE_DATA_SIZE;
+			break;
+		case 0x00:
+		case 0x20:
+		case 0x30:
+		case 0x40:
+		case 0x80:
+		case 0x90:
+		case 0xA0:
+			resolution = IGNORE_REP;
+			break;
+		default: // 0x80
+			resolution = DO_NOT_RESOLVE;
+			break;
+		}
+		break;
+	case THREEBYTE_38:
+	case THREEBYTE_3A:
+		// Do not need to be resolved, all REP+DATA16 combinations are UD
+		// or separately specified.
+		resolution = DO_NOT_RESOLVE;
+		break;
+	case XOP8_MAP:
+	case XOP9_MAP:
+	case XOPA_MAP:
+		// These instructions do not appear to operate on XMM/SSE registers, 
+		// so the REP prefixes can be safely ignored.
+		resolution = IGNORE_REP;
+		break;
+	case THREEDNOW_MAP:
+		// AMD Reference Manual Volume 3, Section 1.2.1, states that all
+		// 3DNow! instructions ignore the data size override prefix.
+		resolution = IGNORE_DATA_SIZE;
+		break;
 	}
 
-	return false;
+	resolution = mandatoryPrefixConflictResolution(insn);
+	printf("Prefix conflict resolution: %d\n", resolution);
+	switch (resolution) {
+	case IGNORE_REP:
+		return attrMask & ~(ATTR_XD | ATTR_XS);
+	case IGNORE_DATA_SIZE:
+		return attrMask & ~ATTR_OPSIZE;
+	default:
+	case DO_NOT_RESOLVE:
+		return attrMask;
+	}
 }
 
 /*
@@ -1127,7 +1220,7 @@ static int getID(struct InternalInstruction *insn)
 			return -1;
 		}
 	} else {
-		if (insn->hasOpSize && (insn->mode != MODE_16BIT) && (!insn->repeatPrefix || !shouldResolveMandatoryPrefixConflict(insn))) {
+		if (insn->hasOpSize && insn->mode != MODE_16BIT) {
 			attrMask |= ATTR_OPSIZE;
 		}
 		if (insn->hasAdSize)
@@ -1142,8 +1235,12 @@ static int getID(struct InternalInstruction *insn)
 				attrMask |= ATTR_XD;
 			else if (insn->repeatPrefix == 0xf3)
 				attrMask |= ATTR_XS;
+		}
 
-			// TODO: TableGen doesn't contain entries for instructions with both REP and DATA16 overrides. REP should take priority, but how do we know if DATA16 is relevant?
+		if ((attrMask & ATTR_OPSIZE) &&
+		    (attrMask & (ATTR_XD | ATTR_XS))) {
+			attrMask =
+				resolveMandatoryPrefixConflict(insn, attrMask);
 		}
 	}
 
