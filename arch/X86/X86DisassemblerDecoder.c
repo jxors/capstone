@@ -161,9 +161,6 @@ static InstrUID decode(OpcodeType type, InstructionContext insnContext,
 	unsigned int index;
 	static const struct OpcodeDecision emptyDecision = { 0 };
 
-	printf("decode(type=%d, insnContext=%d, opcode=0x%02x, modRM=0x%02x)\n",
-	       type, insnContext, opcode, modRM);
-
 	switch (type) {
 	default:
 		break; // never reach
@@ -178,7 +175,6 @@ static InstrUID decode(OpcodeType type, InstructionContext insnContext,
 	case TWOBYTE:
 		//dec = &TWOBYTE_SYM.opcodeDecisions[insnContext].modRMDecisions[opcode];
 		index = index_x86DisassemblerTwoByteOpcodes[insnContext];
-		printf("index=%d\n", index);
 		if (index)
 			dec = &TWOBYTE_SYM[index - 1].modRMDecisions[opcode];
 		else
@@ -923,8 +919,6 @@ static int getIDWithAttrMask(uint16_t *instructionID,
 {
 	bool hasModRMExtension;
 
-	printf("getIDWithAttrMask(%04x)\n", attrMask);
-
 	InstructionContext instructionClass = contextForAttrs(attrMask);
 
 	hasModRMExtension =
@@ -1006,7 +1000,7 @@ typedef enum {
  * reference manuals.
  *
  * Conflicts are resolved by one of these three resolutions:
- * 	 - If conflicts should not be resolved, take no action.
+ *   - If conflicts should not be resolved, take no action.
  *   - If conflicts should be resolved and the instruction has no 
  *     mandatory prefixes, resolves in favor of data size override.
  *   - If conflicts should be resolved and the instruction has mandatory 
@@ -1020,7 +1014,7 @@ static uint16_t resolveMandatoryPrefixConflict(struct InternalInstruction *insn,
 {
 	MandatoryPrefixResolution resolution = DO_NOT_RESOLVE;
 
-	// We inspect the opcode map and opcode to determine how we need to resolve 
+	// We inspect the opcode map and opcode to determine how we need to resolve
 	// a mandatory prefix conflict.
 	switch (insn->opcodeType) {
 	// No one-byte opcodes have mandatory prefixes.
@@ -1028,7 +1022,7 @@ static uint16_t resolveMandatoryPrefixConflict(struct InternalInstruction *insn,
 		resolution = DO_NOT_RESOLVE;
 		break;
 	case TWOBYTE:
-		// Exceptions for instructions that operate on data size-overridable 
+		// Exceptions for instructions that operate on data size-overridable
 		// operands.
 		if (
 			// XADD
@@ -1046,18 +1040,18 @@ static uint16_t resolveMandatoryPrefixConflict(struct InternalInstruction *insn,
 			break;
 		}
 
-		// We inspect the instruction to determine if it operates on xmm 
+		// We inspect the instruction to determine if it operates on xmm
 		// registers or general-purpose registers.
 		//
-		// If it operates on general purpose registers, the data size override 
+		// If it operates on general purpose registers, the data size override
 		// prefix is not a mandatory prefix and should not be ignored.
-		// In most cases, this also means that the REP prefix is not a mandatory 
+		// In most cases, this also means that the REP prefix is not a mandatory
 		// prefix and should be ignored.
 		//
-		// If the instruction operates on xmm registers, the data size override 
+		// If the instruction operates on xmm registers, the data size override
 		// is used to select the operation type (SS, SD, PS, or PD).
 		// In this case, the REP prefixes take priority over the data size [1]
-		// override prefixes, and when both are present the data size override 
+		// override prefixes, and when both are present the data size override
 		// prefix should be ignored.
 		//
 		// The exception is 0xB0, where the REP prefixes are mandatory prefixes
@@ -1099,7 +1093,7 @@ static uint16_t resolveMandatoryPrefixConflict(struct InternalInstruction *insn,
 	case XOP8_MAP:
 	case XOP9_MAP:
 	case XOPA_MAP:
-		// These instructions do not appear to operate on XMM/SSE registers, 
+		// These instructions do not appear to operate on XMM/SSE registers,
 		// so the REP prefixes can be safely ignored.
 		resolution = IGNORE_REP;
 		break;
@@ -1111,7 +1105,6 @@ static uint16_t resolveMandatoryPrefixConflict(struct InternalInstruction *insn,
 	}
 
 	resolution = mandatoryPrefixConflictResolution(insn);
-	printf("Prefix conflict resolution: %d\n", resolution);
 	switch (resolution) {
 	case IGNORE_REP:
 		return attrMask & ~(ATTR_XD | ATTR_XS);
